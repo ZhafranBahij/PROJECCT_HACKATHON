@@ -103,9 +103,7 @@ The API provides the following endpoints:
 ```
 ├── app.py               # Main Flask application file
 ├── requirements.txt   # Project dependencies
-├── uploads/             # Directory for storing uploaded files
-├── venv/                # Virtual environment (optional)
-├── .env                 # Environment variables (API key)
+├── index.html            # UI Websites
 └── README.md            # Project documentation
 ```
 
@@ -122,16 +120,5 @@ Contributions are welcome! Please follow these steps:
 3.  Make your changes and commit them with descriptive messages.
 4.  Submit a pull request.
 
-## 📝 License
 
-This project is licensed under the [MIT License](LICENSE).
 
-## 📬 Contact
-
-If you have any questions or issues, please feel free to contact me at [your_email@example.com](mailto:your_email@example.com).
-
-## 💖 Thanks
-
-Thank you for checking out this project! I hope it helps you build amazing AI-powered applications.
-
-This is written by [readme.ai](https://readme-generator-phi.vercel.app/).
