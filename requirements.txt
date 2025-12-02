@@ -1,0 +1,7 @@
+flask-cors
+requests
+opencv-python
+PyPDF2
+Pillow
+openai
+python-dotenv
