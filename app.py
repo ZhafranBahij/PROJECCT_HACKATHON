@@ -6,200 +6,181 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import PyPDF2
-from PIL import Image
-import io
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load .env
 load_dotenv()
 
-# --- Konfigurasi ---
 app = Flask(__name__)
 CORS(app)
 
+# === KONFIGURASI KOLOSAL AI ===
+API_KEY = os.getenv("KOLOSAL_API_KEY")
+if not API_KEY:
+    raise EnvironmentError("KOLOSAL_API_KEY tidak ditemukan di file .env")
 
-
-# KONFIGURASI API KOLOSAL AI
-API_KEY = os.getenv("KOLOSAL_API_KEY", "ISI SENDIRI YA BANG")
+# 🔥 HAPUS SPASI DI AKHIR URL!
 KOLOSAL_BASE_URL = "https://api.kolosal.ai/v1"
 MODEL_NAME = "Claude Sonnet 4.5"
 
+# === UPLOAD ===
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'mp4', 'mov', 'avi'}
 
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# --- Inisialisasi Klien AI (Hanya sekali saat startup) ---
-# Menggunakan OpenAI client yang diarahkan ke endpoint Kolosal AI
+# === INISIALISASI CLIENT ===
 try:
-    ai_client = kolosal.OpenAI(
-        api_key=API_KEY,
-        base_url=KOLOSAL_BASE_URL
-    )
-    print("Klien Kolosal AI berhasil diinisialisasi.")
+    ai_client = kolosal.OpenAI(api_key=API_KEY, base_url=KOLOSAL_BASE_URL)
+    print("✅ Kolosal AI (Claude) siap digunakan!")
 except Exception as e:
-    print(f"ERROR: Gagal menginisialisasi Klien AI: {e}. Pastikan API Key valid.")
+    print(f"❌ Gagal inisialisasi AI: {e}")
     ai_client = None
 
-# --- Helper Functions ---
-
+# === HELPER FUNCTIONS ===
 def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def encode_image_to_base64(image_path):
-    """Mengubah file gambar menjadi string base64"""
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode('utf-8')
 
 def extract_text_from_pdf(file_path):
-    """Mengekstrak teks dari file PDF"""
     text = ""
     try:
         with open(file_path, 'rb') as f:
             reader = PyPDF2.PdfReader(f)
             for page in reader.pages:
-                # Menghilangkan baris kosong yang berlebihan
-                page_text = page.extract_text() or ""
-                text += page_text + "\n"
+                text += (page.extract_text() or "") + "\n"
     except Exception as e:
-        print(f"PDF Error: {e}")
+        return f"[Gagal ekstrak PDF: {str(e)}]"
     return text
 
 def process_video_frames(video_path):
-    """
-    Mengambil 3 frame dari video (awal, tengah, akhir) untuk analisis AI.
-    """
-    frames_base64 = []
     cap = cv2.VideoCapture(video_path)
-
     if not cap.isOpened():
         return []
-
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total_frames == 0:
+        cap.release()
         return []
-
-    # Ambil frame di titik 10%, 50%, dan 90% durasi
-    points = [int(total_frames * 0.1), int(total_frames * 0.5), int(total_frames * 0.9)]
-
-    for p in points:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, p)
+    frame_indices = [int(total_frames * 0.1), int(total_frames * 0.5), int(total_frames * 0.9)]
+    frames_base64 = []
+    for idx in frame_indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ret, frame = cap.read()
         if ret:
-            # Resize frame agar tidak terlalu besar (opsional, untuk efisiensi)
             frame = cv2.resize(frame, (640, 360))
-            _, buffer = cv2.imencode('.jpg', frame)
+            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             frames_base64.append(base64.b64encode(buffer).decode('utf-8'))
-
     cap.release()
     return frames_base64
 
-# --- Integrasi AI (Menggunakan Gemini) ---
-
-def call_ai_api(user_text, context_data):
-    """
-    Mengirim request ke API Kolosal (OpenAI Compatible).
-    """
-    if ai_client is None:
-        return "Maaf, klien AI gagal diinisialisasi. Periksa API Key dan koneksi Anda."
-
-    # System Instruction
-    system_instruction = "Anda adalah Asisten Keuangan UMKM ahli. Analisis dokumen, gambar struk, atau video kondisi toko yang diberikan. Berikan saran praktis, hemat, dan ramah. Respon dalam Bahasa Indonesia."
-
-    # Prepare user content
-    user_content = [{"type": "text", "text": user_text}]
-
-    # Add Context Data
-    if context_data['type'] == 'text':
-        user_content.append({"type": "text", "text": f"\n\nISI DOKUMEN:\n{context_data['content']}"})
-
-    elif context_data['type'] == 'image':
-        user_content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/jpeg;base64,{context_data['content']}"
-            }
-        })
-
-    elif context_data['type'] == 'video_frames':
-        user_content.append({"type": "text", "text": "Berikut adalah beberapa frame dari video yang diunggah user:"})
-        for frame in context_data['content']:
-            user_content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{frame}"
-                }
-            })
-
+def safe_remove_file(path):
     try:
-        response = ai_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_content}
-            ],
-            max_tokens=2048,
-            temperature=0.7
-        )
-        return response.choices[0].message.content
+        os.remove(path)
+    except:
+        pass
 
-    except Exception as e:
-        print(f"API Error: {e}")
-        return f"Maaf, terjadi kesalahan saat menghubungi AI: {str(e)}"
-
-# --- Routes ---
-
+# === ROUTES ===
 @app.route('/')
 def index():
     return send_from_directory('templates', 'index.html')
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    user_message = request.form.get('message', '')
+    user_message = request.form.get('message', '').strip()
     context_data = {'type': 'none', 'content': ''}
+    file_path = None
 
-    if 'file' in request.files:
-        file = request.files['file']
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(file_path)
+    try:
+        if 'file' in request.files:
+            file = request.files['file']
+            if file and file.filename != '' and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                file.save(file_path)
 
-            ext = filename.rsplit('.', 1)[1].lower()
-
-            # Proses berdasarkan tipe file
-            if ext == 'pdf' or ext == 'txt':
-                context_data['type'] = 'text'
+                ext = filename.rsplit('.', 1)[1].lower()
                 if ext == 'pdf':
+                    context_data['type'] = 'text'
                     context_data['content'] = extract_text_from_pdf(file_path)
-                else:
+                elif ext == 'txt':
                     try:
-                        context_data['content'] = open(file_path, 'r', encoding='utf-8').read()
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            context_data['content'] = f.read()
+                        context_data['type'] = 'text'
                     except Exception as e:
-                        context_data['content'] = f"[Gagal membaca teks file: {e}]"
+                        return jsonify({"reply": f"Gagal baca file teks: {str(e)}"})
+                elif ext in ['jpg', 'jpeg', 'png']:
+                    context_data['type'] = 'image'
+                    context_data['content'] = encode_image_to_base64(file_path)
+                elif ext in ['mp4', 'mov', 'avi']:
+                    frames = process_video_frames(file_path)
+                    if frames:
+                        context_data['type'] = 'video_frames'
+                        context_data['content'] = frames
+                    else:
+                        return jsonify({"reply": "Gagal memproses video. Coba file lain."})
 
-            elif ext in ['jpg', 'jpeg', 'png']:
-                context_data['type'] = 'image'
-                context_data['content'] = encode_image_to_base64(file_path)
+        if ai_client is None:
+            reply = "Maaf, AI sedang maintenance. Coba lagi nanti."
+        else:
+            system_prompt = (
+                "Anda adalah Bambang & Siti, asisten keuangan UMKM dari tim Faril, Zhafran, Udin. "
+                "Beri respons dalam Bahasa Indonesia yang santai dan membantu. "
+                "FORMAT WAJIB:\n"
+                "- Sapa dengan 'Mas' atau 'Mbak'\n"
+                "- Tulis setiap poin di baris terpisah (jangan jadi satu paragraf panjang)\n"
+                "- Gunakan bullet sederhana: •\n"
+                "- JANGAN pernah gunakan tanda bintang (*), markdown, atau format tebal\n"
+                "- Akhiri dengan kalimat penyemangat + emotikon: 😊 💡 🛠️\n\n"
+                "Contoh yang BENAR:\n"
+                "Hai, Mas! 😊 Laporan keuangan sudah bagus, tapi ada yang perlu diperbaiki.\n"
+                "• Catat semua transaksi harian, termasuk pengeluaran kecil\n"
+                "• Pisahkan rekening pribadi dan usaha\n"
+                "• Gunakan aplikasi seperti BukuKas biar tidak ribet\n"
+                "Tetap semangat, usaha Mas pasti makin maju! 💪💡"
+            )
 
-            elif ext in ['mp4', 'mov', 'avi']:
-                # Proses Video: Ambil Frame
-                frames = process_video_frames(file_path)
-                if frames:
-                    context_data['type'] = 'video_frames'
-                    context_data['content'] = frames
-                else:
-                    return jsonify({"reply": "Gagal membaca video."})
+            user_content = [{"type": "text", "text": user_message or "Analisis data yang dikirim."}]
+            if context_data['type'] == 'text':
+                user_content.append({"type": "text", "text": f"\n\nDOKUMEN:\n{context_data['content']}"})
+            elif context_data['type'] == 'image':
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"image/jpeg;base64,{context_data['content']}"}
+                })
+            elif context_data['type'] == 'video_frames':
+                user_content.append({"type": "text", "text": "Berikut frame dari video toko Anda:"})
+                for frame in context_data['content']:
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"image/jpeg;base64,{frame}"}
+                    })
 
-    ai_reply = call_ai_api(user_message, context_data)
+            response = ai_client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                max_tokens=2048,
+                temperature=0.7
+            )
+            reply = response.choices[0].message.content
 
-    return jsonify({
-        "reply": ai_reply
-    })
+        return jsonify({"reply": reply})
 
+    except Exception as e:
+        print(f"Error di /api/chat: {e}")
+        return jsonify({"reply": "Maaf, terjadi kesalahan internal. Tim kami segera memperbaiki! 😊"})
+    
+    finally:
+        if file_path and os.path.exists(file_path):
+            safe_remove_file(file_path)
+
+# === JALANKAN ===
 if __name__ == '__main__':
-    app.run(debug=True,  host = 'localhost', port=8000)
+    app.run(debug=True, host='localhost', port=8000)  # ← ganti 'localhost' jadi '0.0.0.0' biar bisa diakses HP
